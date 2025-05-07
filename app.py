@@ -1,86 +1,64 @@
 import streamlit as st
-import json
-import faiss
-import numpy as np
-from sentence_transformers import SentenceTransformer
+import asyncio
+from core.searcher import search, query_ollama
+from core.model_manager import list_available_models, query_ollama
+# Safe AsyncIO Setup
+def ensure_asyncio():
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
-INDEX_FILE = "ptp_faiss.index"
-METADATA_FILE = "ptp_metadata.json"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+ensure_asyncio()
 
-@st.cache_resource
-def load_model():
-    return SentenceTransformer(EMBEDDING_MODEL)
 
-@st.cache_resource
-def load_index():
-    return faiss.read_index(INDEX_FILE)
+st.title("📘 PTPExplorer: OpenShift Networking Doc Search")
 
-@st.cache_data
-def load_metadata():
-    with open(METADATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+query = st.text_input("Enter your question:")
+versions = st.multiselect("Select versions to compare:", options=["4.13", "4.14", "4.15", "4.16", "4.17", "4.18"])
+keyword = st.text_input("Optional: Prioritize keyword (e.g., PTPConfig)")
 
-def search(query, top_k=5, versions=None):
-    model = load_model()
-    index = load_index()
-    metadata = load_metadata()
+# Dynamically detect available models
+available_models = list_available_models()
+if not available_models:
+    st.error("No LLM models available. Please start Mistral or LLaMA with Ollama.")
+else:
+    model_choice = st.selectbox("Choose LLM Model:", available_models)
 
-    query_vec = model.encode([query]).astype("float32")
-    D, I = index.search(query_vec, top_k)
+if st.button("🔍 Search"):
+    if query:
+        results = search(query, top_k=5, versions=versions, prioritize_keyword=keyword)
+        st.session_state.search_results = results
+        st.session_state.llm_response = ""  # Reset LLM response
 
-    results = []
-    for idx in I[0]:
-        entry = metadata[idx]
-        if versions and entry["version"] not in versions:
-            continue
-        results.append(entry)
-    return results
+# Display Search Results
+if st.session_state.get("search_results"):
+    st.subheader("🔍 Retrieved Chunks")
+    combined_context = "\n\n".join([res['text'] for res in st.session_state.search_results])
+    for res in st.session_state.search_results:
+        st.markdown(f"**Version {res['version']} - Chunk {res['chunk_id']}**")
+        st.write(res["text"])
 
-# Streamlit UI
-st.title("📘 PTPDiff: OpenShift Networking Doc Search")
-query = st.text_input("Enter your question:", placeholder="e.g. How did egress IPs change in 4.15?")
-
-versions = st.multiselect("Filter by OpenShift version (optional):", options=["4.13", "4.14", "4.15", "4.16", "4.17", "4.18"])
-
-if st.button("🔍 Search") and query:
-    results = search(query, top_k=10, versions=versions if versions else None)
-    if results:
-        st.subheader("🔍 Retrieved Chunks")
-        combined_context = ""
-        for res in results:
-            st.markdown(f"**Version {res['version']} - Chunk {res['chunk_id']}**")
-            st.write(res["text"])
-            combined_context += f"\n\n---\n{res['text']}"
-
-        if st.button("🧠 Summarize with Mistral"):
-            with st.spinner("Thinking..."):
+    if st.button(f"🧠 Summarize with {model_choice}"):
+        if model_choice:
+            with st.spinner(f"Thinking with {model_choice}..."):
                 summary_prompt = f"""You are a technical assistant. Based on the following OpenShift documentation excerpts, summarize or answer the question:
 
     Question: {query}
+
+    Versions: {', '.join(versions)}
 
     Documentation:
     {combined_context}
 
     Answer:"""
-                llm_response = query_ollama(summary_prompt)
-                st.success("✅ Summary from Mistral:")
-                st.write(llm_response)
-    else:
-        st.warning("No matching results found.")
-    #results = search(query, top_k=10, versions=versions if versions else None)
-    #if results:
-    #    for res in results:
-    #        st.markdown(f"**Version {res['version']} - Chunk {res['chunk_id']}**")
-    #        st.write(res["text"])
-    #        st.divider()
-    #else:
-    #    st.warning("No matching results found.")
+                st.session_state.llm_response = query_ollama(summary_prompt, model=model_choice)
+        else:
+            st.warning("No model selected.")
 
-def query_ollama(prompt, model="mistral"):
-    response = requests.post("http://localhost:11434/api/generate", json={
-        "model": model,
-        "prompt": prompt,
-        "stream": False
-    })
-    return response.json()["response"]
+        # Display the LLM Response if available
+        if st.session_state.llm_response:
+            st.success(f"✅ Summary from {model_choice}:")
+            st.write(st.session_state.llm_response)
+    else:
+        st.info("Search results will appear here.")

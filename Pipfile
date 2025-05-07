@@ -5,10 +5,10 @@ name = "pypi"
 
 [packages]
 pymupdf = "*"
-requests = "*"
 sentence-transformers = "*"
 faiss-cpu = "*"
 streamlit = "*"
+requests = "*"
 
 [dev-packages]
 
